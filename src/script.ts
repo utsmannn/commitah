@@ -278,6 +278,6 @@ async function generateCommitMessages(diff: string, prevCommit: string): Promise
 }
 
 function isURL(string: string): boolean {
-    const urlRegex = /^(https?:\/\/)?(www\.)?([a-zA-Z0-9\-\.]+\.)+([a-zA-Z0-9\-\/]+)([/?#]*)*$/;
+    const urlRegex = /^(https?:\/\/)?(www\.)?([a-zA-Z0-9\-\.]+\.)+([a-zA-Z0-9\-\/]+)(:[0-9]+)?([/?#]*)*$/;
     return urlRegex.test(string);
 }
