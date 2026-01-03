@@ -1,6 +1,7 @@
 import fetch from 'node-fetch'
 import { exec } from 'child_process'
 import { promisify } from 'util'
+import chalk from 'chalk'
 
 interface NpmRegistryResponse {
     'dist-tags': {
@@ -16,7 +17,6 @@ async function getCurrentVersion(): Promise<string> {
         const { stdout } = await execAsync(`${PACKAGE_NAME} --version`)
         return stdout.trim()
     } catch (error) {
-        console.error('Error getting current version:', error)
         return '0.0.0'
     }
 }
@@ -26,20 +26,29 @@ export async function checkForUpdates(): Promise<void> {
         const currentVersion = await getCurrentVersion()
         const response = await fetch(`https://registry.npmjs.org/${PACKAGE_NAME}`)
         if (!response.ok) {
-            throw new Error(`HTTP error! Status: ${response.status}`)
+            return
         }
 
         const data = await response.json() as NpmRegistryResponse
         const latestVersion = data['dist-tags'].latest
 
         if (isNewVersionAvailable(currentVersion, latestVersion)) {
-            console.log(`New version available: ${latestVersion}. Updating...`)
-            await updatePackage()
-            console.log('Update completed. Please restart the script.')
-            process.exit(0)
+            console.log(chalk.yellow(`\nNew version available: ${chalk.bold(latestVersion)} (current: ${currentVersion})`))
+            console.log(chalk.gray('Updating...'))
+
+            const success = await updatePackage(latestVersion)
+
+            if (success) {
+                console.log(chalk.green('\nUpdate completed successfully!'))
+                console.log(chalk.gray('Run ' + chalk.bold('commitah') + ' again to use the new version.\n'))
+                process.exit(0)
+            } else {
+                console.log(chalk.red('\nUpdate failed. Please run: npm install -g commitah@latest\n'))
+                process.exit(1)
+            }
         }
-    } catch (error) {
-        console.error("Error checking for updates:", error)
+    } catch {
+        // Silently fail - don't block the tool for update issues
     }
 }
 
@@ -58,11 +67,21 @@ function isNewVersionAvailable(currentVersion: string, latestVersion: string): b
     return false
 }
 
-async function updatePackage(): Promise<void> {
+async function updatePackage(latestVersion: string): Promise<boolean> {
     try {
-        await execAsync(`npm install -g ${PACKAGE_NAME}@latest`)
-        console.log('Package updated successfully.')
+        const { stdout, stderr } = await execAsync(`npm install -g ${PACKAGE_NAME}@${latestVersion}`)
+
+        if (stderr && stderr.includes('WARN')) {
+            // Warnings are OK
+        }
+
+        // Verify the update worked
+        const { stdout: versionOutput } = await execAsync(`${PACKAGE_NAME} --version`)
+        const newVersion = versionOutput.trim()
+
+        return newVersion === latestVersion
     } catch (error) {
-        console.error('Error updating package:', error)
+        console.error(chalk.red('Error updating package:'), error)
+        return false
     }
 }
