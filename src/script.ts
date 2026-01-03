@@ -118,7 +118,16 @@ async function start(show: boolean) {
         }
 
     } else {
-        console.error('Something went wrong. Make sure there are staged changes using "git add".')
+        // Check if there are any changes at all (staged or unstaged)
+        const status = await $`git status --porcelain`.nothrow().quiet()
+
+        if (!status.stdout.trim()) {
+            console.log(chalk.yellow('\nNo changes to commit. Working tree is clean.\n'))
+        } else {
+            console.log(chalk.yellow('\nNo changes detected after staging. This might be a bug.\n'))
+            console.log(chalk.gray('Git status:'))
+            console.log(status.stdout.trim())
+        }
         process.exit(0)
     }
 }
