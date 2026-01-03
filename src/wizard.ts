@@ -1,442 +1,457 @@
 // wizard.ts
 import blessed from 'blessed'
-import { loadConfig, updateConfig } from './config.js'
+import { spawn } from 'child_process'
+import { loadConfig, updateConfig, getConfigPath } from './config.js'
 
-interface FormData {
-  provider: string
-  apiKey: string
-  model: string
-  resultCount: string
+interface UrlTemplate {
+  name: string
+  url: string
+  defaultModel: string
+  requiresApiKey: boolean
 }
 
-type FocusableElement = blessed.Widgets.RadioButtonElement | blessed.Widgets.TextboxElement | blessed.Widgets.ButtonElement
-
 export class ConfigProviderForm {
-  screen: blessed.Widgets.Screen
-  private form: blessed.Widgets.FormElement<FormData>
-  private textboxes: Map<string, blessed.Widgets.TextboxElement> = new Map()
-  private textLabels: Map<string, blessed.Widgets.TextElement> = new Map()
+  private screen: blessed.Widgets.Screen
+  private mainBox: blessed.Widgets.BoxElement
+  private providerLabel!: blessed.Widgets.TextElement
+  private baseUrlField!: blessed.Widgets.TextboxElement
+  private baseUrlLabel!: blessed.Widgets.TextElement
+  private apiKeyField!: blessed.Widgets.TextboxElement
+  private modelField!: blessed.Widgets.TextboxElement
+  private resultCountField!: blessed.Widgets.TextboxElement
   private submitButton!: blessed.Widgets.ButtonElement
-  private radioset!: blessed.Widgets.RadioSetElement
-  private providers = [
-    'OpenAI',
-    'Gemini',
-    'DeepSeek',
-    'Ollama',
-    'Custom'
-  ]
+  private cancelButton!: blessed.Widgets.ButtonElement
   private resolveForm?: (value: boolean) => void
+  private selectedTemplateIndex = 0
+  private currentField = 0 // 0=provider, 1=baseurl, 2=apikey, 3=model, 4=results, 5=save, 6=cancel
+
+  private urlTemplates: UrlTemplate[] = [
+    { name: 'OpenAI', url: 'https://api.openai.com/v1', defaultModel: 'gpt-4o', requiresApiKey: true },
+    { name: 'Anthropic', url: 'https://api.anthropic.com/v1', defaultModel: 'claude-sonnet-4-5', requiresApiKey: true },
+    { name: 'Gemini', url: 'https://generativelanguage.googleapis.com/v1beta/openai/', defaultModel: 'gemini-2.5-flash', requiresApiKey: true },
+    { name: 'DeepSeek', url: 'https://api.deepseek.com', defaultModel: 'deepseek-chat', requiresApiKey: true },
+    { name: 'Groq', url: 'https://api.groq.com/openai/v1', defaultModel: 'llama-3.3-70b-versatile', requiresApiKey: true },
+    { name: 'Mistral', url: 'https://api.mistral.ai/v1', defaultModel: 'mistral-large-latest', requiresApiKey: true },
+    { name: 'Together', url: 'https://api.together.xyz/v1', defaultModel: 'meta-llama/Llama-3.3-70B-Instruct-Turbo', requiresApiKey: true },
+    { name: 'Fireworks', url: 'https://api.fireworks.ai/inference/v1', defaultModel: 'accounts/fireworks/models/llama-v3p3-70b-instruct', requiresApiKey: true },
+    { name: 'OpenRouter', url: 'https://openrouter.ai/api/v1', defaultModel: 'anthropic/claude-3.5-sonnet', requiresApiKey: true },
+    { name: 'Cerebras', url: 'https://api.cerebras.ai/v1', defaultModel: 'llama-3.3-70b', requiresApiKey: true },
+    { name: 'GLM', url: 'https://api.z.ai/api/coding/paas/v4', defaultModel: 'glm-4.7', requiresApiKey: true },
+    { name: 'Ollama', url: 'http://localhost:11434/v1', defaultModel: 'llama3.1', requiresApiKey: false },
+    { name: 'Custom', url: '', defaultModel: '', requiresApiKey: true }
+  ]
 
   constructor() {
     this.screen = blessed.screen({
       smartCSR: true,
-      title: 'Commitah AI Provider Configuration'
+      title: 'Commitah Configuration'
     })
 
-    this.form = blessed.form<FormData>({
+    this.mainBox = blessed.box({
       parent: this.screen,
-      width: '90%',
-      height: '90%',
-      top: 1,
+      width: '80%',
+      height: 18,
+      top: 'center',
       left: 'center',
-      keys: true,
-      vi: true
-    }) as blessed.Widgets.FormElement<FormData>
-
-    blessed.box({
-      parent: this.form,
-      top: 0,
-      left: 2,
-      right: 0,
-      height: 1,
-      content: 'Commitah AI Provider Configuration'
+      border: { type: 'line' },
+      style: { border: { fg: 'cyan' } }
     })
 
-    this.createRadioFields()
-    this.createFields()
-    this.createButton()
-    this.setupKeys()
+    blessed.text({
+      parent: this.mainBox,
+      top: 0,
+      left: 'center',
+      content: ' ⚙ Commitah Configuration ',
+      style: { fg: 'cyan', bold: true }
+    })
+
+    this.loadInitialTemplate()
+    this.createUI()
+    this.setupGlobalKeys()
+    this.updateHighlight()
   }
 
-  private createRadioFields(): void {
+  private loadInitialTemplate(): void {
+    const config = loadConfig()
+    const index = this.urlTemplates.findIndex(t => t.url === config.providerUrl)
+    if (index !== -1) {
+      this.selectedTemplateIndex = index
+    } else if (config.providerUrl) {
+      this.selectedTemplateIndex = this.urlTemplates.length - 1
+    }
+  }
+
+  private createUI(): void {
+    const config = loadConfig()
+    const template = this.urlTemplates[this.selectedTemplateIndex]
+    const isCustom = template.name === 'Custom'
+
+    // Provider selector (row 0)
     blessed.text({
-      parent: this.form,
+      parent: this.mainBox,
       top: 2,
       left: 2,
       content: 'Provider:',
-      height: 1
+      style: { fg: 'white' }
     })
 
-    this.radioset = blessed.radioset({
-      parent: this.form,
+    this.providerLabel = blessed.text({
+      parent: this.mainBox,
       top: 2,
-      left: 25,
-      height: 6
-    }) as blessed.Widgets.RadioSetElement
+      left: 14,
+      content: `◀ ${template.name} ▶`,
+      style: { fg: 'cyan', bold: true }
+    })
 
-    let radioTop = 0
-    this.providers.forEach((provider, index) => {
-      const radio = blessed.radiobutton({
-        parent: this.radioset,
-        top: radioTop,
-        left: 0,
-        height: 1,
-        content: provider,
-        checked: index === 0
-      })
+    // Base URL (row 1)
+    this.baseUrlLabel = blessed.text({
+      parent: this.mainBox,
+      top: 4,
+      left: 2,
+      content: 'Base URL:',
+      style: { fg: 'white' }
+    })
 
-      radio.on('check', () => {
-        this.updateFields(provider)
-      })
+    this.baseUrlField = blessed.textbox({
+      parent: this.mainBox,
+      top: 4,
+      left: 14,
+      right: 3,
+      height: 1,
+      style: {
+        fg: isCustom ? 'white' : 'gray',
+        bg: 'black',
+        focus: { fg: 'white', bg: 'blue' }
+      },
+      inputOnFocus: false,
+      value: config.providerUrl || template.url
+    }) as blessed.Widgets.TextboxElement
 
-      radioTop += 1
+    // API Key (row 2)
+    blessed.text({
+      parent: this.mainBox,
+      top: 6,
+      left: 2,
+      content: 'API Key:',
+      style: { fg: 'white' }
+    })
+
+    this.apiKeyField = blessed.textbox({
+      parent: this.mainBox,
+      top: 6,
+      left: 14,
+      right: 3,
+      height: 1,
+      style: {
+        fg: 'white',
+        bg: 'black',
+        focus: { fg: 'white', bg: 'blue' }
+      },
+      inputOnFocus: false,
+      value: config.providerApiKey || ''
+    }) as blessed.Widgets.TextboxElement
+
+    // Model (row 3)
+    blessed.text({
+      parent: this.mainBox,
+      top: 8,
+      left: 2,
+      content: 'Model:',
+      style: { fg: 'white' }
+    })
+
+    this.modelField = blessed.textbox({
+      parent: this.mainBox,
+      top: 8,
+      left: 14,
+      right: 3,
+      height: 1,
+      style: {
+        fg: 'white',
+        bg: 'black',
+        focus: { fg: 'white', bg: 'blue' }
+      },
+      inputOnFocus: false,
+      value: config.model || template.defaultModel
+    }) as blessed.Widgets.TextboxElement
+
+    // Results (row 4)
+    blessed.text({
+      parent: this.mainBox,
+      top: 10,
+      left: 2,
+      content: 'Results:',
+      style: { fg: 'white' }
+    })
+
+    this.resultCountField = blessed.textbox({
+      parent: this.mainBox,
+      top: 10,
+      left: 14,
+      width: 10,
+      height: 1,
+      style: {
+        fg: 'white',
+        bg: 'black',
+        focus: { fg: 'white', bg: 'blue' }
+      },
+      inputOnFocus: false,
+      value: (config.sizeOption || 3).toString()
+    }) as blessed.Widgets.TextboxElement
+
+    // Buttons
+    this.submitButton = blessed.button({
+      parent: this.mainBox,
+      top: 12,
+      left: 'center',
+      content: ' Save ',
+      style: {
+        fg: 'black',
+        bg: 'green',
+        focus: { fg: 'white', bg: 'blue' }
+      },
+      height: 1,
+      width: 8
+    }) as blessed.Widgets.ButtonElement
+
+    this.cancelButton = blessed.button({
+      parent: this.mainBox,
+      top: 12,
+      left: '50%+6',
+      content: ' Cancel ',
+      style: {
+        fg: 'black',
+        bg: 'red',
+        focus: { fg: 'white', bg: 'blue' }
+      },
+      height: 1,
+      width: 10
+    }) as blessed.Widgets.ButtonElement
+
+    // Help
+    blessed.text({
+      parent: this.mainBox,
+      top: 14,
+      left: 'center',
+      content: '↑↓:Navigate | ←→:Provider | Enter:Edit | Esc:Done/Cancel | v:Vim',
+      style: { fg: 'gray' }
     })
   }
 
-  private updateFields(provider: string): void {
-    const apiKeyLabel = this.textLabels.get('apiKey')
-    const modelLabel = this.textLabels.get('model')
-    const apiKeyField = this.textboxes.get('apiKey')
-    const modelField = this.textboxes.get('model')
-    const resultCountLabel = this.textLabels.get('resultCount')
-    const resultCountField = this.textboxes.get('resultCount')
+  private setupGlobalKeys(): void {
+    this.screen.key(['escape', 'C-c'], () => this.handleCancel())
 
-    const customUrlLabel = this.textLabels.get('customUrl')
-    const customApiKeyLabel = this.textLabels.get('customApiKey')
-    const customUrlField = this.textboxes.get('customUrl')
-    const customApiKeyField = this.textboxes.get('customApiKey')
-
-    // Toggle visibility based on provider
-    if (provider === 'Custom') {
-      // Hide standard apiKey field
-      apiKeyLabel?.hide()
-      apiKeyField?.hide()
-      // Show custom fields
-      customUrlLabel?.show()
-      customApiKeyLabel?.show()
-      customUrlField?.show()
-      customApiKeyField?.show()
-      // Keep model and result count visible
-      modelLabel?.show()
-      modelField?.show()
-      resultCountLabel?.show()
-      resultCountField?.show()
-    } else {
-      // Show standard fields
-      apiKeyLabel?.show()
-      apiKeyField?.show()
-      modelLabel?.show()
-      modelField?.show()
-      resultCountLabel?.show()
-      resultCountField?.show()
-      // Hide custom fields
-      customUrlLabel?.hide()
-      customApiKeyLabel?.hide()
-      customUrlField?.hide()
-      customApiKeyField?.hide()
-
-      if (apiKeyLabel) {
-        apiKeyLabel.setContent(provider === 'Ollama' ? 'Ollama URL:' : `${provider} API Key:`)
+    this.screen.key(['v'], () => {
+      if (!this.isEditing()) {
+        this.openInVim()
       }
+    })
+
+    this.screen.key(['up', 'k'], () => {
+      if (!this.isEditing()) {
+        this.navigateUp()
+      }
+    })
+
+    this.screen.key(['down', 'j', 'tab'], () => {
+      if (!this.isEditing()) {
+        this.navigateDown()
+      }
+    })
+
+    this.screen.key(['left', 'h'], () => {
+      if (!this.isEditing() && this.currentField === 0) {
+        this.changeProvider(-1)
+      }
+    })
+
+    this.screen.key(['right', 'l'], () => {
+      if (!this.isEditing() && this.currentField === 0) {
+        this.changeProvider(1)
+      }
+    })
+
+    this.screen.key(['enter'], () => {
+      if (!this.isEditing()) {
+        this.handleEnter()
+      }
+    })
+  }
+
+  private isEditing(): boolean {
+    const focused = this.screen.focused
+    return focused === this.baseUrlField ||
+           focused === this.apiKeyField ||
+           focused === this.modelField ||
+           focused === this.resultCountField
+  }
+
+  private navigateUp(): void {
+    if (this.currentField > 0) {
+      this.currentField--
+      this.updateHighlight()
+    }
+  }
+
+  private navigateDown(): void {
+    if (this.currentField < 6) {
+      this.currentField++
+      this.updateHighlight()
+    }
+  }
+
+  private isCustomProvider(): boolean {
+    return this.urlTemplates[this.selectedTemplateIndex].name === 'Custom'
+  }
+
+  private changeProvider(dir: number): void {
+    this.selectedTemplateIndex += dir
+    if (this.selectedTemplateIndex < 0) {
+      this.selectedTemplateIndex = this.urlTemplates.length - 1
+    } else if (this.selectedTemplateIndex >= this.urlTemplates.length) {
+      this.selectedTemplateIndex = 0
     }
 
-    // Update model field for all providers
-    if (modelField) {
-      switch (provider) {
-        case 'OpenAI':
-          modelField.setValue('gpt-4-turbo-preview')
-          break
-        case 'Gemini':
-          modelField.setValue('gemini-1.5-flash')
-          break
-        case 'DeepSeek':
-          modelField.setValue('deepseek-chat')
-          break
-        case 'Ollama':
-          modelField.setValue('llama3.2')
-          break
-        case 'Custom':
-          // Keep existing value or clear it
-          modelField.setValue(modelField.value || '')
-          break
-      }
+    const template = this.urlTemplates[this.selectedTemplateIndex]
+    const isCustom = template.name === 'Custom'
+
+    this.providerLabel.setContent(`◀ ${template.name} ▶`)
+    this.baseUrlField.setValue(template.url)
+    this.baseUrlField.style.fg = isCustom ? 'white' : 'gray'
+    this.modelField.setValue(template.defaultModel)
+    this.screen.render()
+  }
+
+  private updateHighlight(): void {
+    // Reset all styles
+    this.providerLabel.style.fg = 'white'
+    this.providerLabel.style.bold = false
+    this.baseUrlField.style.bg = 'black'
+    this.apiKeyField.style.bg = 'black'
+    this.modelField.style.bg = 'black'
+    this.resultCountField.style.bg = 'black'
+    this.submitButton.style.bg = 'green'
+    this.cancelButton.style.bg = 'red'
+
+    // Highlight current
+    switch (this.currentField) {
+      case 0:
+        this.providerLabel.style.fg = 'cyan'
+        this.providerLabel.style.bold = true
+        break
+      case 1:
+        this.baseUrlField.style.bg = 'blue'
+        break
+      case 2:
+        this.apiKeyField.style.bg = 'blue'
+        break
+      case 3:
+        this.modelField.style.bg = 'blue'
+        break
+      case 4:
+        this.resultCountField.style.bg = 'blue'
+        break
+      case 5:
+        this.submitButton.style.bg = 'blue'
+        break
+      case 6:
+        this.cancelButton.style.bg = 'blue'
+        break
     }
 
     this.screen.render()
   }
 
-  private createFields(): void {
-    const currentConfig = loadConfig()
-    const initialProvider = currentConfig.provider || 'OpenAI'
-
-    // Create standard fields with model field first
-    const fields = [
-      {
-        name: 'model',
-        label: 'Model:',
-        value: currentConfig.model || '',
-        top: 8
-      },
-      {
-        name: 'apiKey',
-        label: initialProvider === 'Ollama' ? 'Ollama URL:' : `${initialProvider} API Key:`,
-        top: 10,
-        value: initialProvider === 'Ollama' ? currentConfig.providerUrl : currentConfig.providerApiKey
-      },
-      {
-        name: 'resultCount',
-        label: 'Result count:',
-        value: currentConfig.sizeOption?.toString() || '1',
-        top: 14  // Moved down to accommodate custom fields
-      }
-    ]
-
-    fields.forEach(field => {
-      const textLabel = blessed.text({
-        parent: this.form,
-        top: field.top,
-        left: 2,
-        content: field.label,
-        height: 1
-      })
-
-      const textbox = blessed.textbox({
-        parent: this.form,
-        name: field.name,
-        top: field.top,
-        left: 25,
-        right: 2,
-        height: 1,
-        style: {
-          focus: {
-            bg: 'blue',
-            fg: 'white'
-          }
-        },
-        inputOnFocus: true,
-        value: field.value,
-
-      }) as blessed.Widgets.TextboxElement
-
-      textbox.key('enter', () => {
-        const nextField = this.getNextVisibleField(field.name)
-        if (nextField) {
-          nextField.focus()
-        } else {
-          this.submitButton.focus()
+  private handleEnter(): void {
+    switch (this.currentField) {
+      case 0:
+        // Provider - do nothing, use arrows
+        break
+      case 1:
+        // Base URL - only editable for Custom
+        if (this.isCustomProvider()) {
+          this.editField(this.baseUrlField)
         }
-      })
-
-      this.textboxes.set(field.name, textbox)
-      this.textLabels.set(field.name, textLabel)
-    })
-
-    // Add custom provider fields after model field
-    const customFields = [
-      {
-        name: 'customUrl',
-        label: 'Custom URL:',
-        top: 10,
-        value: currentConfig.provider === 'Custom' ? currentConfig.providerUrl : '',
-      },
-      {
-        name: 'customApiKey',
-        label: 'Custom API Key:',
-        top: 12,
-        value: currentConfig.provider === 'Custom' ? currentConfig.providerApiKey : '',
-      }
-    ]
-
-    customFields.forEach(field => {
-      const textLabel = blessed.text({
-        parent: this.form,
-        top: field.top,
-        left: 2,
-        content: field.label,
-        height: 1
-      })
-
-      const textbox = blessed.textbox({
-        parent: this.form,
-        name: field.name,
-        top: field.top,
-        left: 25,
-        right: 2,
-        height: 1,
-        style: {
-          focus: {
-            bg: 'blue',
-            fg: 'white'
-          }
-        },
-        inputOnFocus: true,
-        value: field.value,
-      }) as blessed.Widgets.TextboxElement
-
-      textbox.key('enter', () => {
-        const nextField = this.getNextVisibleField(field.name)
-        if (nextField) {
-          nextField.focus()
-        } else {
-          this.submitButton.focus()
-        }
-      })
-
-      this.textboxes.set(field.name, textbox)
-      this.textLabels.set(field.name, textLabel)
-
-      // Initially hide custom fields if not Custom provider
-      if (initialProvider !== 'Custom') {
-        textLabel.hide()
-        textbox.hide()
-      }
-    })
-
-    // Initialize radio button state for Custom provider
-    if (initialProvider === 'Custom') {
-      const radioButtons = this.radioset.children as blessed.Widgets.RadioButtonElement[]
-      radioButtons.forEach(radio => {
-        if (radio.content === 'Custom') {
-          radio.check()
-        }
-      })
-      // Hide standard apiKey field
-      this.textLabels.get('apiKey')?.hide()
-      this.textboxes.get('apiKey')?.hide()
+        break
+      case 2:
+        this.editField(this.apiKeyField)
+        break
+      case 3:
+        this.editField(this.modelField)
+        break
+      case 4:
+        this.editField(this.resultCountField)
+        break
+      case 5:
+        this.handleSubmit()
+        break
+      case 6:
+        this.handleCancel()
+        break
     }
   }
 
-  private getNextVisibleField(currentFieldName: string): blessed.Widgets.TextboxElement | null {
-    const fields = Array.from(this.textboxes.entries())
-    const currentIndex = fields.findIndex(([name]) => name === currentFieldName)
-
-    for (let i = currentIndex + 1; i < fields.length; i++) {
-      const [, field] = fields[i]
-      if (!field.hidden) {
-        return field
-      }
-    }
-    return null
+  private editField(field: blessed.Widgets.TextboxElement): void {
+    field.focus()
+    field.readInput(() => {
+      // Reset focus to mainBox to allow navigation
+      this.mainBox.focus()
+      this.updateHighlight()
+    })
   }
 
-  private createButton(): void {
-    this.submitButton = blessed.button({
-      parent: this.form,
-      bottom: 3,
-      left: 'center',
-      content: '[ Submit ]',
-      style: {
-        focus: {
-          bg: 'blue',
-          fg: 'white'
-        }
-      },
-      height: 1,
-      width: 12,
-      mouse: true,
-      keys: true,
-      padding: {
-        left: 1,
-        right: 1
-      }
-    }) as blessed.Widgets.ButtonElement
+  private handleSubmit(): void {
+    const template = this.urlTemplates[this.selectedTemplateIndex]
+    const isCustom = template.name === 'Custom'
 
-    this.submitButton.key('enter', () => {
-      let selectedProvider = ''
-      const radios = this.radioset.children as blessed.Widgets.RadioButtonElement[]
-      radios.forEach((radio, index) => {
-        if (radio.checked) {
-          selectedProvider = this.providers[index]
-        }
-      })
+    // For custom, use the entered URL; otherwise use template URL
+    const providerUrl = isCustom ? (this.baseUrlField.value || '') : template.url
 
-      const formData: FormData = {
-        provider: selectedProvider,
-        apiKey: this.textboxes.get('apiKey')?.value || '',
-        model: this.textboxes.get('model')?.value || '',
-        resultCount: this.textboxes.get('resultCount')?.value || '1'
-      }
+    updateConfig({
+      provider: template.name,
+      providerUrl: providerUrl,
+      providerApiKey: this.apiKeyField.value || '',
+      model: this.modelField.value || template.defaultModel,
+      sizeOption: parseInt(this.resultCountField.value || '3', 10) || 3
+    })
 
-      const configUpdate: any = {
-        model: formData.model, // Model is always saved from the model field
-        sizeOption: parseInt(formData.resultCount, 10) || 1,
-        messageSpec: "conventional commit",
-        provider: selectedProvider
-      }
+    this.screen.destroy()
+    if (this.resolveForm) {
+      this.resolveForm(true)
+    }
+  }
 
-      if (formData.provider === 'Ollama') {
-        configUpdate.providerUrl = formData.apiKey
-        configUpdate.providerApiKey = 'ollama'
-      } else if (formData.provider === 'Custom') {
-        configUpdate.providerUrl = this.textboxes.get('customUrl')?.value || ''
-        configUpdate.providerApiKey = this.textboxes.get('customApiKey')?.value || ''
-      } else {
-        let baseUrl = ''
-        switch (formData.provider) {
-          case 'OpenAI':
-            baseUrl = 'https://api.openai.com/v1'
-            break
-          case 'Gemini':
-            baseUrl = 'https://generativelanguage.googleapis.com/v1beta/openai/'
-            break
-          case 'DeepSeek':
-            baseUrl = 'https://api.deepseek.com/v1'
-            break
-        }
+  private handleCancel(): void {
+    this.screen.destroy()
+    if (this.resolveForm) {
+      this.resolveForm(false)
+    }
+  }
 
-        configUpdate.providerUrl = baseUrl
-        configUpdate.providerApiKey = formData.apiKey
-      }
+  private openInVim(): void {
+    const configPath = getConfigPath()
+    this.screen.destroy()
 
-      updateConfig(configUpdate)
+    const editor = process.env.EDITOR || 'vim'
+    const child = spawn(editor, [configPath], { stdio: 'inherit' })
 
-      this.screen.destroy()
+    child.on('exit', () => {
       if (this.resolveForm) {
         this.resolveForm(true)
       }
     })
   }
 
-  private setupKeys(): void {
-    this.screen.key(['escape', 'C-c'], () => {
-      this.screen.destroy()
-      if (this.resolveForm) {
-        this.resolveForm(false)
-      }
-    })
-
-    this.screen.key(['tab'], () => {
-      const elements: FocusableElement[] = [
-        ...(this.radioset.children as blessed.Widgets.RadioButtonElement[]),
-        ...Array.from(this.textboxes.values()),
-        this.submitButton
-      ]
-
-      const focused = this.screen.focused as FocusableElement
-      const currentIndex = elements.indexOf(focused)
-      const nextIndex = (currentIndex + 1) % elements.length
-      elements[nextIndex].focus()
-    })
-  }
   public run(): Promise<boolean> {
     return new Promise((resolve) => {
       this.resolveForm = resolve
-      const firstRadio = this.radioset.children[0] as blessed.Widgets.RadioButtonElement
-      if (firstRadio) {
-        firstRadio.focus()
-      }
       this.screen.render()
     })
   }
 
-  public waitForKey(
-    keys: string[]
-  ): Promise<void> {
+  public waitForKey(keys: string[]): Promise<void> {
     return new Promise((resolve) => {
-      this.screen.key(keys, () => {
-        resolve()
-      })
+      this.screen.key(keys, () => resolve())
     })
   }
-
 }

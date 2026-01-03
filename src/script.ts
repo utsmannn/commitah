@@ -10,11 +10,12 @@ import { zodResponseFormat } from "openai/helpers/zod"
 import { z } from "zod"
 import { ConfigProviderForm } from "./wizard.js"
 import { exit } from "process"
-import { CommitSelector } from "./commit-ui.js"
+import { CommitSelector, CommitOption } from "./commit-ui.js"
 
 const CommitMessage = z.object({
     messages: z.array(z.object({
-        message: z.string()
+        header: z.string().describe("The commit header/subject line (max 72 chars, conventional commit format)"),
+        body: z.string().optional().describe("Optional detailed explanation of what and why")
     }))
 })
 
@@ -57,6 +58,9 @@ export async function main() {
 async function start(show: boolean) {
     await checkproviderApiKey()
 
+    // Auto stage all changes
+    await $`git add --all`.nothrow().quiet()
+
     const diff = await getGitDiff()
     const colors = [chalk.red, chalk.yellow, chalk.green, chalk.blue, chalk.magenta, chalk.cyan]
 
@@ -76,25 +80,29 @@ async function start(show: boolean) {
         const prevCommit = diff.prevCommit ? JSON.stringify(diff.prevCommit) : ''
 
         spinner.start()
-        const textCommitMessage = await generateCommitMessages(diffAsContext, prevCommit)
+        const commitOptions = await generateCommitMessages(diffAsContext, prevCommit)
         spinner.stop()
 
         try {
             const selector = new CommitSelector()
-            const answer = await selector.showMessages(textCommitMessage)
+            const result = await selector.showMessages(commitOptions)
 
-            if (answer === null) {
+            if (result === null) {
                 console.log(chalk.yellow('Commit selection cancelled'))
                 return
             }
 
             if (show) {
-                console.log(chalk.green(`\n    '${answer}'\n`))
+                console.log(chalk.green(`\nHeader: ${result.header}`))
+                if (result.body) {
+                    console.log(chalk.gray(`\nBody:\n${result.body}`))
+                }
+                console.log()
             } else {
                 spinner.text = 'Git committing...'
                 spinner.start()
 
-                const commitMessage: string = answer
+                const commitMessage = result.fullMessage
 
                 const gitCommit = await $`git commit -m ${commitMessage}`.nothrow().quiet()
                 const commitOutput = gitCommit.stdout.trim()
@@ -122,9 +130,8 @@ async function showCurrentConfig() {
     Provider URL            : ${loadConfig().providerUrl}
     Provider API key        : ${loadConfig().providerApiKey}
     AI Model                : ${loadConfig().model}
-    Message Specification   : ${loadConfig().messageSpec}
     Output count            : ${loadConfig().sizeOption}
-    
+
     `
     console.log(currentConfigString)
 }
@@ -195,7 +202,7 @@ async function checkproviderApiKey() {
 
 }
 
-async function generateCommitMessages(diff: string, prevCommit: string): Promise<string[]> {
+async function generateCommitMessages(diff: string, prevCommit: string): Promise<CommitOption[]> {
     const config = loadConfig()
     let baseUrl = config.providerUrl
 
@@ -214,63 +221,149 @@ async function generateCommitMessages(diff: string, prevCommit: string): Promise
         apiKey: config.providerApiKey
     })
 
-    const systemMessage = `
-    You are an expert at analyzing the git diff changes.
-    
-    Follow these rules for commit messages:
-    1. Format: <type>[scope]([optional context]): <long description>
-    
-    2. Follow Conventional Commits rules with scope types
+    // Providers that support structured output (response_format with json_schema)
+    const structuredOutputProviders = ['OpenAI', 'Gemini', 'DeepSeek']
+    const useStructuredOutput = structuredOutputProviders.includes(config.provider)
 
-    3. Message should be minimum 90 characters and maximum 110 characters
+    const systemMessage = `You are an expert at writing clear, meaningful git commit messages based on code diffs.
 
-    4. Message should be more highly technical, include file name or function
+Generate commit messages following Conventional Commits format:
 
-    Follow this additional rules: ${config.messageSpec}
-    `
+HEADER FORMAT: <type>(<scope>): <description>
+- Types: feat, fix, docs, style, refactor, perf, test, chore, build, ci
+- Scope: optional, indicates the affected module/component
+- Description: imperative mood ("add" not "added"), max 72 chars
+- Be specific about WHAT changed, not just the file names
+
+BODY (optional): Include for complex changes
+- Explain WHY the change was made
+- Describe any important implementation details
+- Wrap at 72 characters per line
+- Leave empty for simple, self-explanatory changes
+
+EXAMPLES:
+- feat(auth): add OAuth2 login with Google provider
+- fix(api): handle null response in user endpoint
+- refactor(db): extract connection pool to separate module
+- chore: update dependencies to latest versions
+
+Focus on the intent and impact of changes, not just what files were modified.`
+
+    const userMessage = `Here are the recent commits for context:\n${prevCommit}\n\nHere is the current staged diff:\n${diff}\n\nGenerate ${config.sizeOption} commit message options. Include body only when the changes are complex or need explanation.`
 
     try {
-        const completion = await openai.beta.chat.completions.parse({
-            model: config.model || "gpt-4",
-            messages: [
-                {
-                    role: "system",
-                    content: systemMessage
-                },
-                {
-                    role: "user",
-                    content: `Previous commits: ${prevCommit}\nCurrent diff: ${diff}\nProvide ${config.sizeOption} alternative commit message options following conventional commit format and previous commits.`
+        if (useStructuredOutput) {
+            // Use structured output for providers that support it
+            const completion = await openai.beta.chat.completions.parse({
+                model: config.model || "gpt-4",
+                messages: [
+                    { role: "system", content: systemMessage },
+                    { role: "user", content: userMessage }
+                ],
+                response_format: zodResponseFormat(CommitMessage, "commitSuggestions")
+            }).catch(error => {
+                if (error.status === 401) {
+                    console.error(`Authentication error: Invalid API key for ${config.provider}`)
+                    exit(1)
                 }
-            ],
-            response_format: zodResponseFormat(CommitMessage, "commitSuggestions")
-        }).catch(error => {
-            if (error.status === 401) {
-                console.error(`Authentication error: Invalid API key for ${config.provider}`)
-                exit(1)
-            }
-            if (error.status === 404) {
-                console.error(`Model ${config.model} not found in ${config.provider}`)
-                exit(1)
-            }
-            if (error.status === 429) {
-                console.error(`Rate limit exceeded for ${config.provider}`)
-                exit(1)
-            }
-            throw error
-        })
+                if (error.status === 404) {
+                    console.error(`Model ${config.model} not found in ${config.provider}`)
+                    exit(1)
+                }
+                if (error.status === 429) {
+                    console.error(`Rate limit exceeded for ${config.provider}`)
+                    exit(1)
+                }
+                throw error
+            })
 
-        if (!completion) {
-            console.error(`Failed to get response from ${config.provider}`)
-            exit(1)
+            if (!completion) {
+                console.error(`Failed to get response from ${config.provider}`)
+                exit(1)
+            }
+
+            const parsed = completion.choices[0]?.message?.parsed
+            if (!parsed) {
+                console.error(`No parsed result from ${config.provider}`)
+                exit(1)
+            }
+
+            return parsed.messages.map(item => ({
+                header: item.header,
+                body: item.body
+            }))
+        } else {
+            // Fallback: Ask for JSON in the prompt and parse manually
+            const jsonSystemMessage = systemMessage + `
+
+IMPORTANT: Respond ONLY with a valid JSON object in this exact format:
+{"messages": [{"header": "commit message header", "body": "optional body or empty string"}, ...]}
+
+Do not include any text before or after the JSON. Do not use markdown code blocks.`
+
+            const completion = await openai.chat.completions.create({
+                model: config.model || "gpt-4",
+                messages: [
+                    { role: "system", content: jsonSystemMessage },
+                    { role: "user", content: userMessage }
+                ]
+            }).catch(error => {
+                if (error.status === 401) {
+                    console.error(`Authentication error: Invalid API key for ${config.provider}`)
+                    exit(1)
+                }
+                if (error.status === 404) {
+                    console.error(`Model ${config.model} not found in ${config.provider}`)
+                    exit(1)
+                }
+                if (error.status === 429) {
+                    console.error(`Rate limit exceeded for ${config.provider}`)
+                    exit(1)
+                }
+                throw error
+            })
+
+            if (!completion) {
+                console.error(`Failed to get response from ${config.provider}`)
+                exit(1)
+            }
+
+            const content = completion.choices[0]?.message?.content || ''
+
+            // Try to extract JSON from the response
+            let jsonStr = content.trim()
+
+            // Remove markdown code blocks if present
+            if (jsonStr.startsWith('```')) {
+                jsonStr = jsonStr.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '')
+            }
+
+            try {
+                const parsed = JSON.parse(jsonStr) as { messages: Array<{ header: string; body?: string }> }
+                return parsed.messages.map(item => ({
+                    header: item.header,
+                    body: item.body
+                }))
+            } catch {
+                // If JSON parsing fails, try to extract commit messages from plain text
+                const lines = content.split('\n').filter(line => line.trim())
+                const messages: CommitOption[] = []
+
+                for (const line of lines) {
+                    const cleaned = line.replace(/^[-*\d.)\s]+/, '').trim()
+                    if (cleaned && cleaned.match(/^(feat|fix|docs|style|refactor|perf|test|chore|build|ci)/)) {
+                        messages.push({ header: cleaned })
+                    }
+                }
+
+                if (messages.length > 0) {
+                    return messages.slice(0, config.sizeOption)
+                }
+
+                console.error(`Failed to parse response from ${config.provider}`)
+                exit(1)
+            }
         }
-
-        const parsed = completion.choices[0]?.message?.parsed
-        if (!parsed) {
-            console.error(`No parsed result from ${config.provider}`)
-            exit(1)
-        }
-
-        return parsed.messages.map(item => item.message)
     } catch (error) {
         console.error(`Error generating commit messages from ${config.provider}:`, error)
         exit(1)

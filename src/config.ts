@@ -3,7 +3,6 @@ import * as path from "path"
 
 interface Config {
     readonly providerApiKey: string
-    readonly messageSpec: string
     readonly provider: string
     readonly providerUrl: string
     readonly sizeOption: number
@@ -15,13 +14,12 @@ function createDefaultConfig(): Config {
         provider: "",
         providerApiKey: "",
         providerUrl: "",
-        messageSpec: "More tech detailing and comprehensive in one line message.",
         sizeOption: 3,
-        model: "gemini-2.0-flash-exp"
+        model: "gpt-4o"
     }
 }
 
-function getConfigPath(): string {
+export function getConfigPath(): string {
     const homeDir = process.env.HOME || process.env.USERPROFILE
     return path.join(homeDir!, ".commitahconfig-v2")
 }

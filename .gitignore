@@ -79,3 +79,4 @@ types/
 # *.tsx
 # Include specific .ts files if needed
 # !types/*.ts
+.beads/
