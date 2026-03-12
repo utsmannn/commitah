@@ -1,7 +1,6 @@
 import fetch from 'node-fetch'
-import { exec } from 'child_process'
-import { promisify } from 'util'
 import chalk from 'chalk'
+import { createRequire } from 'module'
 
 interface NpmRegistryResponse {
     'dist-tags': {
@@ -9,14 +8,14 @@ interface NpmRegistryResponse {
     }
 }
 
-const execAsync = promisify(exec)
 const PACKAGE_NAME = 'commitah'
+const require = createRequire(import.meta.url)
 
 async function getCurrentVersion(): Promise<string> {
     try {
-        const { stdout } = await execAsync(`${PACKAGE_NAME} --version`)
-        return stdout.trim()
-    } catch (error) {
+        const packageJson = require('../package.json') as { version?: string }
+        return packageJson.version || '0.0.0'
+    } catch {
         return '0.0.0'
     }
 }
@@ -34,18 +33,7 @@ export async function checkForUpdates(): Promise<void> {
 
         if (isNewVersionAvailable(currentVersion, latestVersion)) {
             console.log(chalk.yellow(`\nNew version available: ${chalk.bold(latestVersion)} (current: ${currentVersion})`))
-            console.log(chalk.gray('Updating...'))
-
-            const success = await updatePackage(latestVersion)
-
-            if (success) {
-                console.log(chalk.green('\nUpdate completed successfully!'))
-                console.log(chalk.gray('Run ' + chalk.bold('commitah') + ' again to use the new version.\n'))
-                process.exit(0)
-            } else {
-                console.log(chalk.red('\nUpdate failed. Please run: npm install -g commitah@latest\n'))
-                process.exit(1)
-            }
+            console.log(chalk.gray(`Update manually with: npm install -g ${PACKAGE_NAME}@latest\n`))
         }
     } catch {
         // Silently fail - don't block the tool for update issues
@@ -67,21 +55,3 @@ function isNewVersionAvailable(currentVersion: string, latestVersion: string): b
     return false
 }
 
-async function updatePackage(latestVersion: string): Promise<boolean> {
-    try {
-        const { stdout, stderr } = await execAsync(`npm install -g ${PACKAGE_NAME}@${latestVersion}`)
-
-        if (stderr && stderr.includes('WARN')) {
-            // Warnings are OK
-        }
-
-        // Verify the update worked
-        const { stdout: versionOutput } = await execAsync(`${PACKAGE_NAME} --version`)
-        const newVersion = versionOutput.trim()
-
-        return newVersion === latestVersion
-    } catch (error) {
-        console.error(chalk.red('Error updating package:'), error)
-        return false
-    }
-}

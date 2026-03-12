@@ -20,31 +20,24 @@
   "dependencies": {
     "blessed": "^0.1.81",
     "chalk": "^5.4.1",
-    "clear": "^0.1.0",
-    "clui": "^0.3.6",
-    "commander": "^13.1.0",
     "figlet": "^1.8.0",
     "node-fetch": "^3.3.2",
-    "openai": "^4.81.0",
+    "openai": "^4.104.0",
     "ora": "^8.1.1",
-    "ts-node": "^10.9.2",
-    "tsx": "^4.19.2",
+    "tsx": "^4.21.0",
     "typescript": "^5.7.2",
     "yargs": "^17.7.2",
     "zod": "^3.24.1",
-    "zx": "^8.2.4"
+    "zx": "^8.8.5"
   },
   "devDependencies": {
-    "@inquirer/select": "^4.0.3",
     "@types/blessed": "^0.1.25",
-    "@types/chalk": "^0.4.31",
-    "@types/clui": "^0.3.4",
-    "@types/commander": "^2.12.0",
     "@types/figlet": "^1.7.0",
-    "@types/inquirer": "^9.0.7",
+    "@types/fs-extra": "^11.0.4",
     "@types/yargs": "^17.0.33",
-    "ora": "^8.1.1",
-    "ts-node": "^10.9.2",
-    "typescript": "^5.7.2"
+    "fs-extra": "^11.3.4"
+  },
+  "overrides": {
+    "form-data": "^4.0.5"
   }
 }

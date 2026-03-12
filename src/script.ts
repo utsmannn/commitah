@@ -51,18 +51,20 @@ export async function main() {
     } else if (argv.configUpdate) {
         await promptAndUpdateConfig()
     } else {
-        start(argv.show)
+        await start(argv.show)
     }
 }
 
 async function start(show: boolean) {
     await checkproviderApiKey()
 
-    // Auto stage all changes
-    await $`git add --all`.nothrow().quiet()
-
     const diff = await getGitDiff()
     const colors = [chalk.red, chalk.yellow, chalk.green, chalk.blue, chalk.magenta, chalk.cyan]
+
+    if (diff.error) {
+        console.error(diff.error)
+        process.exit(1)
+    }
 
     if (diff.diff) {
         const spinner = ora({
@@ -102,10 +104,10 @@ async function start(show: boolean) {
                 spinner.text = 'Git committing...'
                 spinner.start()
 
-                const commitMessage = result.fullMessage
-
-                const gitCommit = await $`git commit -m ${commitMessage}`.nothrow().quiet()
-                const commitOutput = gitCommit.stdout.trim()
+                const gitCommit = result.body?.trim()
+                    ? await $`git commit -m ${result.header} -m ${result.body}`.nothrow().quiet()
+                    : await $`git commit -m ${result.header}`.nothrow().quiet()
+                const commitOutput = (gitCommit.stdout || gitCommit.stderr).trim()
                 if (gitCommit.exitCode !== 0) {
                     spinner.fail(`Something error: ${commitOutput}`)
                 } else {
@@ -124,7 +126,7 @@ async function start(show: boolean) {
         if (!status.stdout.trim()) {
             console.log(chalk.yellow('\nNo changes to commit. Working tree is clean.\n'))
         } else {
-            console.log(chalk.yellow('\nNo changes detected after staging. This might be a bug.\n'))
+            console.log(chalk.yellow('\nNo staged changes to commit. Stage your changes first.\n'))
             console.log(chalk.gray('Git status:'))
             console.log(status.stdout.trim())
         }
@@ -133,13 +135,14 @@ async function start(show: boolean) {
 }
 
 async function showCurrentConfig() {
+    const config = loadConfig()
     const currentConfigString = `
 
-    Provider                : ${loadConfig().provider}
-    Provider URL            : ${loadConfig().providerUrl}
-    Provider API key        : ${loadConfig().providerApiKey}
-    AI Model                : ${loadConfig().model}
-    Output count            : ${loadConfig().sizeOption}
+    Provider                : ${config.provider}
+    Provider URL            : ${config.providerUrl}
+    Provider API key        : ${config.providerApiKey}
+    AI Model                : ${config.model}
+    Output count            : ${config.sizeOption}
 
     `
     console.log(currentConfigString)
@@ -198,17 +201,28 @@ async function getGitDiff(): Promise<DiffCommit> {
 }
 
 async function checkproviderApiKey() {
+    const hasValidConfig = () => {
+        const config = loadConfig()
+        if (!config.providerUrl) {
+            return false
+        }
 
-    if (!loadConfig().providerApiKey || !loadConfig().providerUrl) {
+        if (config.provider === 'Ollama') {
+            return true
+        }
+
+        return Boolean(config.providerApiKey)
+    }
+
+    if (!hasValidConfig()) {
         const configForm = new ConfigProviderForm()
         await configForm.run()
 
-        if (!loadConfig().providerApiKey || !loadConfig().providerUrl) {
+        if (!hasValidConfig()) {
             console.error('Provider not set, exiting...')
             exit(0)
         }
     }
-
 }
 
 async function generateCommitMessages(diff: string, prevCommit: string): Promise<CommitOption[]> {
@@ -217,7 +231,7 @@ async function generateCommitMessages(diff: string, prevCommit: string): Promise
 
     if (!isURL(baseUrl)) {
         console.error(`\nUrl provider is broken! Please run 'commitah --config-update' and re-config again.`)
-        exit(0)
+        exit(1)
     }
 
     if (config.provider === 'Ollama') {
@@ -379,7 +393,11 @@ Do not include any text before or after the JSON. Do not use markdown code block
     }
 }
 
-function isURL(string: string): boolean {
-    const urlRegex = /^(https?:\/\/)?(www\.)?([a-zA-Z0-9\-\.]+\.)+([a-zA-Z0-9\-\/]+)(:[0-9]+)?([/?#]*)*$/;
-    return urlRegex.test(string);
+function isURL(value: string): boolean {
+    try {
+        const url = new URL(value)
+        return url.protocol === 'http:' || url.protocol === 'https:'
+    } catch {
+        return false
+    }
 }

@@ -6,7 +6,7 @@ A powerful Command Line Interface (CLI) tool that leverages AI to generate meani
 
 - 🤖 **AI-Powered Messages**: Generates commit messages by analyzing git diff using various AI providers
 - 🎨 **Interactive UI**: User-friendly CLI interface for selecting commit messages
-- ⚙️ **Multiple AI Providers**: Supports OpenAI, Gemini, DeepSeek, and Ollama
+- ⚙️ **Multiple AI Providers**: Supports OpenAI-compatible providers including OpenAI, Anthropic, Gemini, DeepSeek, Groq, Mistral, Together, Fireworks, OpenRouter, Cerebras, GLM, Ollama, and custom endpoints
 - 🔧 **Configurable**: Customize message specifications and provider settings
 - 📝 **Conventional Commits**: Follows standardized commit message format
 
@@ -34,10 +34,10 @@ npm install --global commitah
 
 Basic usage:
 ```bash
-# Stage your changes first
-git add .
+# Stage only the changes you want to include
+git add <files>
 
-# Generate commit message
+# Generate commit message from staged changes
 commitah
 ```
 
@@ -72,9 +72,18 @@ Example configuration:
 ### Supported Providers
 
 - **OpenAI**: Uses GPT models
+- **Anthropic**: Uses Claude models via OpenAI-compatible endpoint configuration
 - **Gemini**: Uses Google's Gemini models
 - **DeepSeek**: Uses DeepSeek's language models
+- **Groq**
+- **Mistral**
+- **Together**
+- **Fireworks**
+- **OpenRouter**
+- **Cerebras**
+- **GLM**
 - **Ollama**: Uses locally hosted models
+- **Custom**: Uses your own OpenAI-compatible endpoint
 
 ## Ollama Setup Instructions
 
@@ -108,7 +117,7 @@ Note: Ensure Ollama is running before using Commitah with these models.
 
 ## How It Works
 
-1. Analyzes staged changes using `git diff`
+1. Analyzes staged changes using `git diff --staged`
 2. Sends the diff to the configured AI provider
 3. Generates multiple commit message suggestions
 4. Presents an interactive UI to select the preferred message
